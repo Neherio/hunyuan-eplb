@@ -35,6 +35,7 @@ from vllm_omni.diffusion.request import OmniDiffusionRequest
 from vllm_omni.diffusion.sched.interface import DiffusionSchedulerOutput
 from vllm_omni.diffusion.worker.input_batch import InputBatch, scatter_latents
 from vllm_omni.diffusion.worker.utils import BatchRunnerOutput, DiffusionRequestState, RunnerOutput
+from vllm_omni.distributed.eplb.static_policy import apply_static_eplb_weights
 from vllm_omni.distributed.omni_connectors.kv_transfer_manager import OmniKVTransferManager
 from vllm_omni.platforms import current_omni_platform
 from vllm_omni.worker.omni_connector_model_runner_mixin import OmniConnectorModelRunnerMixin
@@ -147,6 +148,9 @@ class DiffusionModelRunner(OmniConnectorModelRunnerMixin):
             time_after_load - time_before_load,
         )
         logger.info("Model runner: Model loaded successfully.")
+
+        if self.od_config.enable_static_eplb:
+            apply_static_eplb_weights(self.pipeline, self.od_config.model)
 
         if getattr(self.od_config, "step_execution", False) and not self.supports_step_mode():
             raise ValueError(
