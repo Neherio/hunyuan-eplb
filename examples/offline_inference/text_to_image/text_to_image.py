@@ -225,6 +225,11 @@ def parse_args() -> argparse.Namespace:
         help="Enable expert parallelism for MoE layers.",
     )
     parser.add_argument(
+        "--static-eplb"
+        action="store_true",
+        help="Enable static expert parallelism loadbalance for MoE.",
+    )
+    parser.add_argument(
         "--lora-path",
         type=str,
         default=None,
@@ -366,7 +371,7 @@ def main():
             #       (e.g., QwenImagePipeline or FluxPipeline)
         }
 
-    profiler_enabled = args.profiler_config is not None
+    profiler_enabled = bool(os.getenv("VLLM_TORCH_PROFILER_DIR"))
 
     # Prepare LoRA kwargs for Omni initialization
     lora_args: dict[str, Any] = {}
@@ -408,6 +413,7 @@ def main():
         "tensor_parallel_size": args.tensor_parallel_size,
         "vae_patch_parallel_size": args.vae_patch_parallel_size,
         "enable_expert_parallel": args.enable_expert_parallel,
+        "enable_static_eplb": args.static_eplb,
         "enforce_eager": args.enforce_eager,
         "enable_cpu_offload": args.enable_cpu_offload,
         "mode": "text-to-image",
