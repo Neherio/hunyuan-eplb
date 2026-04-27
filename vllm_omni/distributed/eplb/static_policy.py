@@ -1,4 +1,5 @@
 import os
+
 import torch
 from vllm.distributed.parallel_state import get_ep_group
 from vllm.logger import init_logger
@@ -11,23 +12,31 @@ def apply_static_eplb_weights(pipeline, layout_path):
     if not os.path.exists(layout_path):
         return
 
-    all_layers_log2phy = torch.load(layout_path)
+    all_layers_log2phy = torch.load(layout_path, map_location="cpu", weights_only=True)
+
+    if not isinstance(all_layers_log2phy, dict) or not all(
+        isinstance(k, int) and isinstance(v, torch.Tensor) for k, v in all_layers_log2phy.items()
+    ):
+        raise TypeError(f"Invalid layout format in {layout_path}. Expected Dict[int, torch.Tensor].")
 
     ep_group = get_ep_group()
     ep_device_group = ep_group.device_group
     ep_rank = ep_device_group.rank()
     ep_size = ep_device_group.size()
-    
+
     logger.info(f"[rank {ep_rank}] [Static EPLB] start replacing static eplb layout.")
     for layer_idx, decoder_layer in enumerate(pipeline.model.layers):
+        if layer_idx not in all_layers_log2phy:
+            continue
+
         logger.debug(f"[rank {ep_rank}] [Static EPLB] layer{layer_idx} start replacing static eplb layout.")
 
         log2phy = all_layers_log2phy[layer_idx].to(decoder_layer.mlp.experts.w13_weight.device)
         decoder_layer.mlp.expert_layout = log2phy
         phy2log = torch.argsort(log2phy)
-        
+
         num_global_experts = len(log2phy)
-        experts_per_xpu = num_global_experts // ep_size 
+        experts_per_xpu = num_global_experts // ep_size
 
         start_idx = ep_rank * experts_per_xpu
         end_idx = (ep_rank + 1) * experts_per_xpu
@@ -47,7 +56,7 @@ def apply_static_eplb_weights(pipeline, layout_path):
 def compute_optimal_layout_greedy(layer_load: torch.Tensor, num_xpus: int = 4) -> torch.Tensor:
     num_experts = len(layer_load)
     experts_per_xpu = num_experts // num_xpus
-    
+
     expert_info = [(load.item(), i) for i, load in enumerate(layer_load)]
     expert_info.sort(key=lambda x: x[0], reverse=True)
 
@@ -56,13 +65,13 @@ def compute_optimal_layout_greedy(layer_load: torch.Tensor, num_xpus: int = 4) -
 
     for load, logical_id in expert_info:
         best_npu = -1
-        min_load = float('inf')
-        
+        min_load = float("inf")
+
         for i in range(num_xpus):
             if len(npu_buckets[i]) < experts_per_xpu and npu_loads[i] < min_load:
                 min_load = npu_loads[i]
                 best_npu = i
-                
+
         npu_buckets[best_npu].append(logical_id)
         npu_loads[best_npu] += load
 
@@ -76,5 +85,5 @@ def compute_optimal_layout_greedy(layer_load: torch.Tensor, num_xpus: int = 4) -
     log2phy = [0] * num_experts
     for phy_slot, logical_id in enumerate(phy2log):
         log2phy[logical_id] = phy_slot
-        
+
     return torch.tensor(log2phy, dtype=torch.long)

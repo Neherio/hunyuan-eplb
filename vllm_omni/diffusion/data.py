@@ -97,6 +97,9 @@ class DiffusionParallelConfig:
     enable_expert_parallel: bool = False
     """Enable expert parallelism for MoE layers (TP is still used for non-MoE layers)."""
 
+    enable_static_eplb: bool = False
+    """Enable static expert parallelism loadbalance for MoE."""
+
     sequence_parallel_size: int | None = None
     """Number of sequence parallel groups. sequence_parallel_size = ring_degree * ulysses_degree"""
 
@@ -161,6 +164,16 @@ class DiffusionParallelConfig:
         if self.use_hsdp:
             assert self.hsdp_replicate_size > 0, "HSDP replicate size must be > 0"
             assert self.hsdp_shard_size > 0, "HSDP shard size must be > 0 (should be set in __post_init__)"
+
+        # Validate Static EPLB configuration
+        if self.enable_static_eplb:
+            assert self.enable_expert_parallel, "When static EPLB is enabled, expert parallel must be enabled"
+            custom_output_dir = os.environ.get("VLLM_EPLB_OUTPUT_DIR")
+            assert custom_output_dir, (
+                "When static EPLB is enabled, the environment variable VLLM_EPLB_OUTPUT_DIR must be specified."
+            )
+            if not os.path.exists(custom_output_dir):
+                raise ValueError("The path specified by VLLM_EPLB_OUTPUT_DIR does not exist.")
         return self
 
     def __post_init__(self) -> None:
@@ -431,9 +444,6 @@ class OmniDiffusionConfig:
     cache_backend: str = "none"  # "tea_cache", "deep_cache", etc.
     cache_config: DiffusionCacheConfig | dict[str, Any] = field(default_factory=dict)
     enable_cache_dit_summary: bool = False
-
-    # Enable static expert parallelism loadbalance for MoE
-    enable_static_eplb: bool = False
 
     # Distributed executor backend
     distributed_executor_backend: str = "mp"

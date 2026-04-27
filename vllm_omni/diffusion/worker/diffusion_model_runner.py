@@ -11,6 +11,7 @@ model-related operations.
 from __future__ import annotations
 
 import copy
+import os
 import time
 from collections.abc import Iterable
 from contextlib import nullcontext
@@ -149,8 +150,9 @@ class DiffusionModelRunner(OmniConnectorModelRunnerMixin):
         )
         logger.info("Model runner: Model loaded successfully.")
 
-        if self.od_config.enable_static_eplb:
-            apply_static_eplb_weights(self.pipeline, self.od_config.model)
+        if self.od_config.parallel_config.enable_static_eplb:
+            custom_output_dir = os.environ.get("VLLM_EPLB_OUTPUT_DIR")
+            apply_static_eplb_weights(self.pipeline, custom_output_dir)
 
         if getattr(self.od_config, "step_execution", False) and not self.supports_step_mode():
             raise ValueError(
