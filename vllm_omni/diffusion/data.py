@@ -97,9 +97,6 @@ class DiffusionParallelConfig:
     enable_expert_parallel: bool = False
     """Enable expert parallelism for MoE layers (TP is still used for non-MoE layers)."""
 
-    enable_static_eplb: bool = False
-    """Enable static expert parallelism loadbalance for MoE."""
-
     sequence_parallel_size: int | None = None
     """Number of sequence parallel groups. sequence_parallel_size = ring_degree * ulysses_degree"""
 
@@ -434,6 +431,9 @@ class OmniDiffusionConfig:
     cache_backend: str = "none"  # "tea_cache", "deep_cache", etc.
     cache_config: DiffusionCacheConfig | dict[str, Any] = field(default_factory=dict)
     enable_cache_dit_summary: bool = False
+
+    # Enable static expert parallelism loadbalance for MoE
+    enable_static_eplb: bool = False
 
     # Distributed executor backend
     distributed_executor_backend: str = "mp"
