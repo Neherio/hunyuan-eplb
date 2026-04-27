@@ -3,7 +3,6 @@
 
 import inspect
 import logging
-import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -81,7 +80,7 @@ from vllm_omni.diffusion.forward_context import set_forward_context_denoise_step
 from vllm_omni.diffusion.layers.norm import RMSNorm
 from vllm_omni.diffusion.layers.rope import RotaryEmbedding
 from vllm_omni.diffusion.models.hunyuan_image3.hunyuan_fused_moe import HunyuanFusedMoE
-from vllm_omni.distributed.eplb.static_policy import compute_optimal_layout_greedy
+from vllm_omni.distributed.eplb.static_policy import apply_static_eplb_weights, compute_optimal_layout_greedy
 from vllm_omni.model_executor.layers.timestep_embedding import timestep_embedding
 
 logger = logging.getLogger(__name__)
@@ -1572,9 +1571,6 @@ class HunYuanSparseMoeBlock(nn.Module):
         enable_static_eplb: bool = False,
     ):
         super().__init__()
-        self.ep_group = get_ep_group().device_group
-        self.ep_rank = get_ep_group().rank_in_group
-        self.ep_size = self.ep_group.size()
         self.tp_size = get_tensor_model_parallel_world_size()
         self.n_routed_experts = config.num_experts
 
@@ -1605,12 +1601,6 @@ class HunYuanSparseMoeBlock(nn.Module):
         self.n_logical_experts = self.n_routed_experts
         self.n_redundant_experts = 0
         self.n_physical_experts = self.n_logical_experts + self.n_redundant_experts
-        if self.ep_group:
-            self.n_local_physical_experts = self.n_physical_experts // self.ep_size
-            self.physical_expert_start = self.ep_rank * self.n_local_physical_experts
-            self.physical_expert_end = (
-                self.physical_expert_start + self.n_local_physical_experts
-            )
         self.expert_layout = None
 
         self.gate = ReplicatedLinear(
@@ -1655,7 +1645,17 @@ class HunYuanSparseMoeBlock(nn.Module):
             pcp_size=1,
         )
 
-        self.experts.moe_load = torch.zeros(self.n_local_physical_experts, dtype=torch.int64, device=get_local_device())
+        if self.enable_static_eplb:
+            self.ep_group = get_ep_group().device_group
+            self.ep_rank = get_ep_group().rank_in_group
+            self.ep_size = self.ep_group.size()
+            self.n_local_physical_experts = self.n_physical_experts // self.ep_size
+            self.physical_expert_start = self.ep_rank * self.n_local_physical_experts
+            self.physical_expert_end = self.physical_expert_start + self.n_local_physical_experts
+            self.experts.moe_load = torch.zeros(
+                self.n_local_physical_experts, dtype=torch.int64, device=get_local_device()
+            )
+
         self.top_k = top_k
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -1669,7 +1669,7 @@ class HunYuanSparseMoeBlock(nn.Module):
 
         if self.enable_static_eplb:
             if self.expert_layout is not None:
-                physical_logits = torch.full_like(router_logits, float('-inf'))
+                physical_logits = torch.full_like(router_logits, float("-inf"))
                 physical_logits[:, self.expert_layout] = router_logits
                 router_logits = physical_logits
             else:
@@ -1678,7 +1678,7 @@ class HunYuanSparseMoeBlock(nn.Module):
                 flat_indices = topk_indices.flatten()
                 expert_token_counts = torch.bincount(flat_indices, minlength=num_experts)
                 dist.all_reduce(expert_token_counts, op=dist.ReduceOp.SUM, group=get_ep_group().device_group)
-                self.experts.moe_load.add_(expert_token_counts[self.physical_expert_start:self.physical_expert_end])
+                self.experts.moe_load.add_(expert_token_counts[self.physical_expert_start : self.physical_expert_end])
 
         final_hidden_states = self.experts(hidden_states=hidden_states, router_logits=router_logits)
 
@@ -1840,11 +1840,12 @@ class HunYuanAttention(nn.Module):
 
 class HunyuanImage3DecoderLayer(nn.Module):
     def __init__(
-        self, config: HunyuanImage3Config, 
-        quant_config: QuantizationConfig | None, 
-        layer_idx: int, 
-        prefix: str = "", 
-        enable_static_eplb: bool = False
+        self,
+        config: HunyuanImage3Config,
+        quant_config: QuantizationConfig | None,
+        layer_idx: int,
+        prefix: str = "",
+        enable_static_eplb: bool = False,
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -1888,7 +1889,11 @@ class HunyuanImage3DecoderLayer(nn.Module):
             or (isinstance(config.num_experts, list) and max(config.num_experts) > 1)
         ) and layer_idx >= config.moe_layer_num_skipped:
             self.mlp = HunYuanSparseMoeBlock(
-                config, quant_config=quant_config, layer_id=layer_idx, prefix=f"{prefix}.mlp", enable_static_eplb=enable_static_eplb
+                config,
+                quant_config=quant_config,
+                layer_id=layer_idx,
+                prefix=f"{prefix}.mlp",
+                enable_static_eplb=enable_static_eplb,
             )
         else:
             self.mlp = HunYuanMLP(
@@ -2076,7 +2081,13 @@ class HunyuanImage3Model(nn.Module):
         "post_processor": SequenceParallelOutput(gather_dim=1, expected_dims=3),
     }
 
-    def __init__(self, config: HunyuanImage3Config, enable_static_eplb: bool = False, model: str = "", quant_config=None, prefix: str = ""):
+    def __init__(
+        self,
+        config: HunyuanImage3Config,
+        enable_static_eplb: bool = False,
+        quant_config=None,
+        prefix: str = "",
+    ):
         super().__init__()
         lora_config = None
         self.num_redundant_experts = 0
@@ -2119,7 +2130,6 @@ class HunyuanImage3Model(nn.Module):
         self.unifiled_cat = UnifiledCat()
         self.post_processor = HunyuanImagePostprocessor()
         self.enable_static_eplb = enable_static_eplb
-        self.model_path = model
 
     def _split_qkv_weight(self, qkv: torch.Tensor):
         num_attention_heads = self.config.num_attention_heads
@@ -3262,9 +3272,8 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         set_forward_context_denoise_step_idx(None)
 
         pipeline = self.model
-        if pipeline.model.enable_static_eplb:
+        if pipeline.model.enable_static_eplb and self._num_timesteps > 1:
             ep_group = get_ep_group()
-            ep_rank = ep_group.device_group.rank()
             all_layers_physical_map = {}
             first_moe_layer = None
 
@@ -3277,8 +3286,6 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
                 exp_sum = first_moe_layer.mlp.experts.moe_load.sum().item()
 
                 if exp_sum != 0:
-                    custom_output_dir = os.environ.get("VLLM_EPLB_OUTPUT_DIR")
-
                     for layer_idx, layer in enumerate(pipeline.model.layers):
                         if not hasattr(layer.mlp, "experts"):
                             continue
@@ -3290,12 +3297,9 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
                             full_layer_load, num_xpus=ep_group.device_group.size()
                         )
                         all_layers_physical_map[layer_idx] = layer_log2phy
+                        local_load.zero_()
 
-                    layout_path = os.path.join(custom_output_dir, "static_eplb_layout.pt")
-
-                    if ep_rank == 0:
-                        torch.save(all_layers_physical_map, layout_path)
-                        logger.info(f"[Static EPLB] Static expert layout has saved: {layout_path}")
+                    apply_static_eplb_weights(pipeline, all_layers_physical_map)
 
         if hasattr(self.vae.config, "scaling_factor") and self.vae.config.scaling_factor:
             latents = latents / self.vae.config.scaling_factor

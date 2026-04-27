@@ -98,6 +98,9 @@ class DiffusionParallelConfig:
     enable_expert_parallel: bool = False
     """Enable expert parallelism for MoE layers (TP is still used for non-MoE layers)."""
 
+    enable_static_eplb: bool = False
+    """Enable static expert parallelism loadbalance for MoE."""
+
     sequence_parallel_size: int | None = None
     """Number of sequence parallel groups. sequence_parallel_size = ring_degree * ulysses_degree"""
 
@@ -170,6 +173,11 @@ class DiffusionParallelConfig:
         if self.use_hsdp:
             assert self.hsdp_replicate_size > 0, "HSDP replicate size must be > 0"
             assert self.hsdp_shard_size > 0, "HSDP shard size must be > 0 (should be set in __post_init__)"
+
+        # Validate Static EPLB configuration
+        if self.enable_static_eplb:
+            assert self.enable_expert_parallel, "When static EPLB is enabled, expert parallel must be enabled"
+
         return self
 
     def __post_init__(self) -> None:

@@ -225,7 +225,7 @@ def parse_args() -> argparse.Namespace:
         help="Enable expert parallelism for MoE layers.",
     )
     parser.add_argument(
-        "--static-eplb"
+        "--static-eplb",
         action="store_true",
         help="Enable static expert parallelism loadbalance for MoE.",
     )
@@ -371,7 +371,7 @@ def main():
             #       (e.g., QwenImagePipeline or FluxPipeline)
         }
 
-    profiler_enabled = bool(os.getenv("VLLM_TORCH_PROFILER_DIR"))
+    profiler_enabled = args.profiler_config is not None
 
     # Prepare LoRA kwargs for Omni initialization
     lora_args: dict[str, Any] = {}
