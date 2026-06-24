@@ -52,26 +52,26 @@ def compute_optimal_layout_greedy(layer_load: torch.Tensor, num_xpus: int = 4) -
     expert_info = [(load.item(), i) for i, load in enumerate(layer_load)]
     expert_info.sort(key=lambda x: x[0], reverse=True)
 
-    npu_loads = [0] * num_xpus
-    npu_buckets = [[] for _ in range(num_xpus)]
+    xpu_loads = [0] * num_xpus
+    xpu_buckets = [[] for _ in range(num_xpus)]
 
     for load, logical_id in expert_info:
-        best_npu = -1
+        best_xpu = -1
         min_load = float("inf")
 
         for i in range(num_xpus):
-            if len(npu_buckets[i]) < experts_per_xpu and npu_loads[i] < min_load:
-                min_load = npu_loads[i]
-                best_npu = i
+            if len(xpu_buckets[i]) < experts_per_xpu and xpu_loads[i] < min_load:
+                min_load = xpu_loads[i]
+                best_xpu = i
 
-        npu_buckets[best_npu].append(logical_id)
-        npu_loads[best_npu] += load
+        xpu_buckets[best_xpu].append(logical_id)
+        xpu_loads[best_xpu] += load
 
     for i in range(num_xpus):
-        npu_buckets[i].sort()
+        xpu_buckets[i].sort()
 
     phy2log = []
-    for bucket in npu_buckets:
+    for bucket in xpu_buckets:
         phy2log.extend(bucket)
 
     log2phy = [0] * num_experts
